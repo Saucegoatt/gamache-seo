@@ -1,0 +1,6 @@
+.git/
+__pycache__/
+*.pyc
+seo_engine.py
+seo_result.json
+notes_local/
