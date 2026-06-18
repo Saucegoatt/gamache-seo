@@ -13,7 +13,7 @@ import os
 import re
 import json
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 
 import google.auth
 import google.auth.transport.requests
@@ -29,6 +29,9 @@ VREGION = os.environ.get("VERTEX_REGION", "us-central1")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
 GURL = (f"https://{VREGION}-aiplatform.googleapis.com/v1/projects/{PNUM}"
         f"/locations/{VREGION}/publishers/google/models/{MODEL}:generateContent")
+SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "")
+SERP_URL = "https://serpapi.com/search.json"
+TRENDS_GEO = os.environ.get("TRENDS_GEO", "CA-QC")
 
 _creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
 
@@ -118,7 +121,7 @@ SCHEMA = ('{"client":"...","region":"...","note_donnees":"<1 phrase>",'
           '"sources_recommandees":["Search Console (requetes reelles + positions)",'
           '"GA4 (conversions par page)","Token Google Ads (volumes de recherche)"],'
           '"clusters":[{"nom":"...","intention":"informationnel|commercial|transactionnel|local",'
-          '"priorite":"haute|moyenne|basse","requetes":["..."],'
+          '"priorite":"haute|moyenne|basse","terme_trend":"<terme court 1-3 mots pour Google Trends>","requetes":["..."],'
           '"brief":{"titre":"...","angle":"...","faq":["...","...","..."]}}]}')
 
 
@@ -132,7 +135,9 @@ def structure(client, region, raw, services):
         "liste des services offerts (si le client ne fait pas ce service, ne le garde pas), "
         "le hors-sujet et les noms de concurrents. Le champ note_donnees precise que l'analyse "
         "s'appuie sur le site + de vraies recherches Google (ancrage), sans Search Console ni "
-        "Analytics. Donne 6 a 9 clusters. Reponds UNIQUEMENT en JSON : " + SCHEMA
+        "Analytics. Pour chaque cluster, terme_trend = un terme COURT (1-3 mots, SANS ville) propice "
+        "a Google Trends (ex. 'mini excavation', 'pave uni'). "
+        "Donne 6 a 9 clusters. Reponds UNIQUEMENT en JSON : " + SCHEMA
     )
     return _parse(_text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
                                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192,
@@ -151,6 +156,41 @@ def refine_result(prev, instruction, region):
     return _parse(_text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
                                "generationConfig": {"temperature": 0.4, "maxOutputTokens": 8192,
                                                     "responseMimeType": "application/json"}})))
+
+
+def trends(terms):
+    """Google Trends 12 mois (via SerpApi) pour <=5 termes. {} si pas de cle/erreur."""
+    if not SERPAPI_KEY or not terms:
+        return {}
+    params = {"engine": "google_trends", "q": ",".join(terms[:5]),
+              "data_type": "TIMESERIES", "date": "today 12-m", "geo": TRENDS_GEO,
+              "hl": "fr", "api_key": SERPAPI_KEY}
+    try:
+        req = urllib.request.Request(SERP_URL + "?" + urlencode(params),
+                                     headers={"User-Agent": "GamacheSEO"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return {}
+    series = {}
+    for pt in (data.get("interest_over_time", {}).get("timeline_data") or []):
+        for v in (pt.get("values") or []):
+            q, val = v.get("query", ""), v.get("extracted_value")
+            if q and isinstance(val, (int, float)):
+                series.setdefault(q, []).append((pt.get("date", ""), val))
+    out = {}
+    for q, pts in series.items():
+        vals = [v for _, v in pts]
+        if len(vals) < 6:
+            continue
+        n = max(2, len(vals) // 4)
+        old, new = sum(vals[:n]) / n, sum(vals[-n:]) / n
+        var = round((new - old) / old * 100) if old > 0 else 0
+        direction = "en hausse" if var >= 15 else ("en baisse" if var <= -15 else "stable")
+        peak = max(pts, key=lambda x: x[1])[0] if pts else ""
+        out[q] = {"direction": direction, "variation_pct": var, "pic": peak,
+                  "interet_moyen": round(sum(vals) / len(vals))}
+    return out
 
 
 @app.get("/")
@@ -187,6 +227,15 @@ def analyze():
     result["recherches_google"] = searches[:18]
     result["nb_requetes_reelles"] = len(searches)
     result["services"] = services
+    clusters = result.get("clusters", [])
+    terms = [t for t in ((c.get("terme_trend") or c.get("nom") or "").strip() for c in clusters) if t]
+    tr = {}
+    for i in range(0, min(len(terms), 10), 5):
+        tr.update(trends(terms[i:i + 5]))
+    for c in clusters:
+        key = (c.get("terme_trend") or c.get("nom") or "").strip()
+        if key in tr:
+            c["tendance"] = tr[key]
     return jsonify(result)
 
 

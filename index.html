@@ -66,6 +66,13 @@ let current=null;
 const COL={informationnel:'#6ea8d8',commercial:'#caa86a',transactionnel:'#5fbf8f',local:'#5bb3a3'};
 function esc(s){const d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML}
 function badge(t,c){return `<span class="b" style="color:${c};border-color:${c}40;background:${c}1a">${esc(t)}</span>`}
+function trendBadge(tr){
+  if(!tr)return '';
+  const a=tr.direction==='en hausse'?'↗':(tr.direction==='en baisse'?'↘':'→');
+  const c=tr.direction==='en hausse'?'#5fbf8f':(tr.direction==='en baisse'?'#d98a8a':'#8b877e');
+  const v=tr.variation_pct?` ${tr.variation_pct>0?'+':''}${tr.variation_pct}%`:'';
+  return `<span class="b" style="color:${c};border-color:${c}40;background:${c}1a" title="${esc('pic : '+(tr.pic||''))}">Trends ${a}${v}</span>`;
+}
 function render(data){
   current=data;
   const cl=(data&&data.clusters)||[];
@@ -74,7 +81,7 @@ function render(data){
     const col=COL[(c.intention||'').toLowerCase()]||'#8b877e';const b=c.brief||{};
     return `<div class="card">
       <div class="chead"><span class="cname">${esc(c.nom)}</span>
-      <span class="badges">${badge(c.intention,col)}${badge('priorité '+(c.priorite||''),'#caa86a')}</span></div>
+      <span class="badges">${badge(c.intention,col)}${badge('priorité '+(c.priorite||''),'#caa86a')}${trendBadge(c.tendance)}</span></div>
       <div class="chips">${(c.requetes||[]).map(q=>`<span class="chip">${esc(q)}</span>`).join('')}</div>
       <div class="brief"><div class="t">${esc(b.titre)}</div><div class="a">${esc(b.angle)}</div>
       ${(b.faq||[]).map(f=>`<div class="faq">${esc(f)}</div>`).join('')}</div></div>`}).join('');
