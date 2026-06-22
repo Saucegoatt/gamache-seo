@@ -238,8 +238,12 @@ def keyword_volumes(keywords):
                           json=body, timeout=40)
         r.raise_for_status()
         data = r.json()
+    except requests.HTTPError as e:
+        body = e.response.text if e.response is not None else ""
+        print("keyword_volumes HTTP", getattr(e.response, "status_code", "?"), body[:700])
+        return {}
     except Exception as exc:
-        print("keyword_volumes: erreur ->", str(exc)[:160])
+        print("keyword_volumes: erreur ->", str(exc)[:200])
         return {}
     out = {}
     for res in (data.get("results") or []):
