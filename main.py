@@ -33,6 +33,7 @@ GURL = (f"https://{VREGION}-aiplatform.googleapis.com/v1/projects/{PNUM}"
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "")
 SERP_URL = "https://serpapi.com/search.json"
 TRENDS_GEO = os.environ.get("TRENDS_GEO", "CA")
+SERP_TOP = int(os.environ.get("SERP_TOP", "4"))
 SA_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL", "meetsync-sa@notebooklm-entreprise-498216.iam.gserviceaccount.com")
 IMPERSONATE = os.environ.get("IMPERSONATE_SUBJECT", "yannis@gamachemedia.com")
 ADS_DEV_TOKEN = os.environ.get("ADS_DEV_TOKEN", "")
@@ -257,6 +258,72 @@ def keyword_volumes(keywords):
     return out
 
 
+def serp_search(query):
+    """SerpApi Google : {paa, related, concurrents, pub}. {} si pas de cle/erreur."""
+    if not SERPAPI_KEY or not query:
+        return {}
+    params = {"engine": "google", "q": query, "google_domain": "google.ca",
+              "gl": "ca", "hl": "fr", "num": "10", "api_key": SERPAPI_KEY}
+    try:
+        req = urllib.request.Request(SERP_URL + "?" + urlencode(params),
+                                     headers={"User-Agent": "GamacheSEO"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return {}
+    paa = [q.get("question", "") for q in (d.get("related_questions") or []) if q.get("question")][:5]
+    related = [q.get("query", "") for q in (d.get("related_searches") or []) if q.get("query")][:6]
+    conc = []
+    for o in (d.get("organic_results") or [])[:6]:
+        dom = re.sub(r"^https?://(www\.)?", "", (o.get("link") or "")).split("/")[0]
+        if dom and dom not in conc:
+            conc.append(dom)
+    return {"paa": paa, "related": related, "concurrents": conc[:5], "pub": bool(d.get("ads"))}
+
+
+def rising_queries(query):
+    """SerpApi Google Trends RELATED_QUERIES -> requetes en explosion. [] si erreur."""
+    if not SERPAPI_KEY or not query:
+        return []
+    params = {"engine": "google_trends", "q": query, "data_type": "RELATED_QUERIES",
+              "date": "today 12-m", "geo": TRENDS_GEO, "hl": "fr", "api_key": SERPAPI_KEY}
+    try:
+        req = urllib.request.Request(SERP_URL + "?" + urlencode(params),
+                                     headers={"User-Agent": "GamacheSEO"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return []
+    rising = (d.get("related_queries") or {}).get("rising") or []
+    return [x.get("query", "") for x in rising if x.get("query")][:8]
+
+
+def difficulty(items):
+    """1 appel Gemini : difficulte + intention par cluster (par index). {} si erreur."""
+    rows = [f"{i}: {c.get('nom', '')} | concurrents page 1 : "
+            f"{', '.join(c.get('concurrents') or []) or 'n/d'} | "
+            f"pubs : {'oui' if c.get('pub') else 'non'}" for i, c in enumerate(items)]
+    if not rows:
+        return {}
+    prompt = (
+        "Pour chaque ligne (cluster SEO), estime la DIFFICULTE de positionnement "
+        "organique (facile|moyen|difficile) selon la notoriete/force des concurrents "
+        "en page 1, et l'INTENTION dominante (informationnelle|commerciale) selon la "
+        "presence de pubs. Reponds UNIQUEMENT en JSON : "
+        "{\"d\":[{\"i\":0,\"difficulte\":\"...\",\"intention\":\"...\"}]}\n\n" + "\n".join(rows))
+    try:
+        j = _parse(_text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048,
+                                                     "responseMimeType": "application/json"}})))
+    except Exception:
+        return {}
+    out = {}
+    for x in (j.get("d") or []):
+        if isinstance(x.get("i"), int):
+            out[x["i"]] = {"difficulte": x.get("difficulte", ""), "intention": x.get("intention", "")}
+    return out
+
+
 @app.get("/")
 def index():
     return send_from_directory(HERE, "index.html")
@@ -305,6 +372,23 @@ def analyze():
         vkey = (c.get("terme_trend") or c.get("nom") or "").strip().lower()
         if vkey in volmap:
             c["volume"] = volmap[vkey]
+    order = sorted(range(len(clusters)),
+                   key=lambda i: {"haute": 0, "moyenne": 1, "basse": 2}.get(clusters[i].get("priorite"), 3))
+    top = order[:SERP_TOP]
+    for i in top:
+        c = clusters[i]
+        q = (c.get("terme_trend") or (c.get("requetes") or [c.get("nom", "")])[0] or "").strip()
+        s = serp_search(q)
+        if s:
+            c["paa"], c["concurrents"] = s["paa"], s["concurrents"]
+            c["related"], c["pub"] = s["related"], s["pub"]
+    diff = difficulty([clusters[i] for i in top])
+    for k, i in enumerate(top):
+        if k in diff:
+            clusters[i]["difficulte"] = diff[k]["difficulte"]
+            clusters[i]["intention_achat"] = diff[k]["intention"]
+    if terms:
+        result["rising"] = rising_queries(terms[0])
     return jsonify(result)
 
 

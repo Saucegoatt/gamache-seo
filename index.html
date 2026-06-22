@@ -39,6 +39,9 @@ button:disabled{opacity:.45;cursor:default}
 .brief .a{font-size:13px;color:var(--muted);margin:3px 0 8px}
 .faq{font-size:13px;margin:3px 0;padding-left:16px;position:relative}
 .faq::before{content:"?";position:absolute;left:0;color:var(--accent)}
+.more{border-top:1px solid var(--line);margin-top:12px;padding-top:11px}
+.ex{font-size:13px;color:var(--muted);margin:5px 0}
+.exl{color:var(--text);font-weight:500}
 #refine{display:none;gap:10px;margin-top:8px}#refine input{flex:1}
 </style>
 </head>
@@ -78,6 +81,22 @@ function volBadge(v){
   if(v==null)return '';
   return `<span class="b" style="color:#caa86a;border-color:#caa86a55;background:#caa86a22">${v.toLocaleString('fr-CA')} rech./mois</span>`;
 }
+function diffBadge(d){
+  if(!d)return '';
+  const m={facile:'#5fbf8f',moyen:'#caa86a',difficile:'#d98a8a'};
+  const c=m[(d||'').toLowerCase()]||'#8b877e';
+  return `<span class="b" style="color:${c};border-color:${c}40;background:${c}1a">${esc(d)} à ranker</span>`;
+}
+function pubBadge(p){
+  return p?`<span class="b" style="color:#caa86a;border-color:#caa86a40;background:#caa86a1a">intention d'achat</span>`:'';
+}
+function extra(c){
+  let h='';
+  if((c.concurrents||[]).length)h+=`<div class="ex"><span class="exl">Concurrents page 1 :</span> ${c.concurrents.map(esc).join(' · ')}</div>`;
+  if((c.paa||[]).length)h+=`<div class="ex"><span class="exl">Questions réelles (Google) :</span></div>`+c.paa.map(q=>`<div class="faq">${esc(q)}</div>`).join('');
+  if((c.related||[]).length)h+=`<div class="chips" style="margin:8px 0 0">${c.related.map(s=>`<span class="chip">${esc(s)}</span>`).join('')}</div>`;
+  return h?`<div class="more">${h}</div>`:'';
+}
 function render(data){
   current=data;
   const cl=(data&&data.clusters)||[];
@@ -86,17 +105,19 @@ function render(data){
     const col=COL[(c.intention||'').toLowerCase()]||'#8b877e';const b=c.brief||{};
     return `<div class="card">
       <div class="chead"><span class="cname">${esc(c.nom)}</span>
-      <span class="badges">${badge(c.intention,col)}${volBadge(c.volume)}${badge('priorité '+(c.priorite||''),'#caa86a')}${trendBadge(c.tendance)}</span></div>
+      <span class="badges">${badge(c.intention,col)}${volBadge(c.volume)}${badge('priorité '+(c.priorite||''),'#caa86a')}${trendBadge(c.tendance)}${diffBadge(c.difficulte)}${pubBadge(c.pub)}</span></div>
       <div class="chips">${(c.requetes||[]).map(q=>`<span class="chip">${esc(q)}</span>`).join('')}</div>
       <div class="brief"><div class="t">${esc(b.titre)}</div><div class="a">${esc(b.angle)}</div>
-      ${(b.faq||[]).map(f=>`<div class="faq">${esc(f)}</div>`).join('')}</div></div>`}).join('');
+      ${(b.faq||[]).map(f=>`<div class="faq">${esc(f)}</div>`).join('')}</div>${extra(c)}</div>`}).join('');
   const sr=(data.recherches_google||[]);
   const meta=(data.nb_requetes_reelles?`<div class="tagline" style="margin:0 0 8px;color:var(--accent)">${data.nb_requetes_reelles} recherches Google réelles consultées (ancrage) · 0 inventée</div>`:'')
     +(data.note_donnees?`<div class="tagline" style="margin:0 0 10px">${esc(data.note_donnees)}</div>`:'')
     +(sr.length?`<div class="tagline" style="margin:0 0 6px">Vraies recherches Google consultées</div><div class="chips">${sr.map(s=>`<span class="chip">${esc(s)}</span>`).join('')}</div>`:'');
   const rc=(data.sources_recommandees||[]);
   const sources=rc.length?`<div class="tagline" style="margin:18px 0 6px">Pour aller plus loin — accès à brancher</div><div class="chips">${rc.map(s=>`<span class="chip">+ ${esc(s)}</span>`).join('')}</div>`:'';
-  $('#results').innerHTML=meta+cards+sources;
+  const rising=(data.rising||[]);
+  const risingHtml=rising.length?`<div class="card"><div class="cname" style="font-size:15px">🔥 Requêtes en explosion (Trends)</div><div class="chips" style="margin-top:10px">${rising.map(s=>`<span class="chip">${esc(s)}</span>`).join('')}</div></div>`:'';
+  $('#results').innerHTML=meta+risingHtml+cards+sources;
   $('#refine').style.display='flex';
   if(window.gsap)gsap.from('.card',{y:14,opacity:0,duration:.4,stagger:.05,ease:'power2.out'});
 }
