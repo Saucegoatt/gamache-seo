@@ -130,7 +130,7 @@ def extract_seeds(context, client):
         f"Client : {client}\nContenu : {context}\n"
         "Reponds UNIQUEMENT en JSON : {\"seeds\":[\"...\"]}"
     )
-    j = _gen_json(prompt, temperature=0.2, max_tokens=1024)
+    j = _gen_json(prompt, temperature=0.2, max_tokens=4096)
     s = [x.strip() for x in (j.get("seeds") or []) if isinstance(x, str) and x.strip()]
     return s[:8] or [client]
 
@@ -178,7 +178,7 @@ def structure(client, region, raw, services):
         "a Google Trends (ex. 'mini excavation', 'pave uni'). "
         "Donne exactement 10 clusters. Reponds UNIQUEMENT en JSON : " + SCHEMA
     )
-    return _gen_json(prompt, temperature=0.3, max_tokens=8192)
+    return _gen_json(prompt, temperature=0.3, max_tokens=32768)
 
 
 def refine_result(prev, instruction, region):
@@ -190,7 +190,7 @@ def refine_result(prev, instruction, region):
         f"JSON actuel :\n{json.dumps(prev, ensure_ascii=False)[:7000]}\n\n"
         "Reponds UNIQUEMENT le JSON complet mis a jour : " + SCHEMA
     )
-    return _gen_json(prompt, temperature=0.4, max_tokens=8192)
+    return _gen_json(prompt, temperature=0.4, max_tokens=32768)
 
 
 def trends(terms):
@@ -337,7 +337,7 @@ def difficulty(items):
         "presence de pubs. Reponds UNIQUEMENT en JSON : "
         "{\"d\":[{\"i\":0,\"difficulte\":\"...\",\"intention\":\"...\"}]}\n\n" + "\n".join(rows))
     try:
-        j = _gen_json(prompt, temperature=0.2, max_tokens=2048, tries=2)
+        j = _gen_json(prompt, temperature=0.2, max_tokens=16384, tries=2)
     except Exception:
         return {}
     out = {}
