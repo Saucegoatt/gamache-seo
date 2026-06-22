@@ -12,6 +12,7 @@ GET /  GET /health  POST /analyze  POST /refine. Auth Vertex : SA attachee (aucu
 import os
 import re
 import json
+import time
 import urllib.request
 from urllib.parse import urlparse, urlencode
 
@@ -31,7 +32,15 @@ GURL = (f"https://{VREGION}-aiplatform.googleapis.com/v1/projects/{PNUM}"
         f"/locations/{VREGION}/publishers/google/models/{MODEL}:generateContent")
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "")
 SERP_URL = "https://serpapi.com/search.json"
-TRENDS_GEO = os.environ.get("TRENDS_GEO", "CA-QC")
+TRENDS_GEO = os.environ.get("TRENDS_GEO", "CA")
+SA_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL", "meetsync-sa@notebooklm-entreprise-498216.iam.gserviceaccount.com")
+IMPERSONATE = os.environ.get("IMPERSONATE_SUBJECT", "yannis@gamachemedia.com")
+ADS_DEV_TOKEN = os.environ.get("ADS_DEV_TOKEN", "")
+ADS_LOGIN_CID = os.environ.get("ADS_LOGIN_CUSTOMER_ID", "7802443211")
+ADS_CID = os.environ.get("ADS_CUSTOMER_ID", "7802443211")
+ADS_VERSION = os.environ.get("ADS_API_VERSION", "v20")
+ADS_GEO = os.environ.get("ADS_GEO", "2124")
+ADS_LANG = os.environ.get("ADS_LANG", "1002")
 
 _creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
 
@@ -181,7 +190,7 @@ def trends(terms):
     out = {}
     for q, pts in series.items():
         vals = [v for _, v in pts]
-        if len(vals) < 6:
+        if len(vals) < 2:
             continue
         n = max(2, len(vals) // 4)
         old, new = sum(vals[:n]) / n, sum(vals[-n:]) / n
@@ -190,6 +199,57 @@ def trends(terms):
         peak = max(pts, key=lambda x: x[1])[0] if pts else ""
         out[q] = {"direction": direction, "variation_pct": var, "pic": peak,
                   "interet_moyen": round(sum(vals) / len(vals))}
+    return out
+
+
+def _ads_token():
+    now = int(time.time())
+    claims = {"iss": SA_EMAIL, "sub": IMPERSONATE,
+              "scope": "https://www.googleapis.com/auth/adwords",
+              "aud": "https://oauth2.googleapis.com/token", "iat": now, "exp": now + 3600}
+    sign = requests.post(
+        f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{SA_EMAIL}:signJwt",
+        headers={"Authorization": f"Bearer {_bearer()}"},
+        json={"payload": json.dumps(claims)}, timeout=20)
+    sign.raise_for_status()
+    tok = requests.post("https://oauth2.googleapis.com/token", timeout=20, data={
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": sign.json()["signedJwt"]})
+    tok.raise_for_status()
+    return tok.json()["access_token"]
+
+
+def keyword_volumes(keywords):
+    """{mot_cle_minuscule: volume mensuel moyen} via Keyword Planner. {} si pas de token/erreur."""
+    kws = list(dict.fromkeys(k.strip() for k in keywords if k and k.strip()))[:20]
+    if not ADS_DEV_TOKEN or not kws:
+        return {}
+    url = (f"https://googleads.googleapis.com/{ADS_VERSION}/customers/{ADS_CID}"
+           ":generateKeywordHistoricalMetrics")
+    body = {"keywords": kws,
+            "geoTargetConstants": [f"geoTargetConstants/{ADS_GEO}"],
+            "language": f"languageConstants/{ADS_LANG}",
+            "keywordPlanNetwork": "GOOGLE_SEARCH"}
+    try:
+        r = requests.post(url, headers={"Authorization": f"Bearer {_ads_token()}",
+                                        "developer-token": ADS_DEV_TOKEN,
+                                        "login-customer-id": ADS_LOGIN_CID,
+                                        "Content-Type": "application/json"},
+                          json=body, timeout=40)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        print("keyword_volumes: erreur ->", str(exc)[:160])
+        return {}
+    out = {}
+    for res in (data.get("results") or []):
+        t = (res.get("text") or "").strip().lower()
+        vol = (res.get("keywordMetrics") or {}).get("avgMonthlySearches")
+        if t and vol is not None:
+            try:
+                out[t] = int(vol)
+            except Exception:
+                pass
     return out
 
 
@@ -236,6 +296,11 @@ def analyze():
         key = (c.get("terme_trend") or c.get("nom") or "").strip()
         if key in tr:
             c["tendance"] = tr[key]
+    volmap = keyword_volumes(terms)
+    for c in clusters:
+        vkey = (c.get("terme_trend") or c.get("nom") or "").strip().lower()
+        if vkey in volmap:
+            c["volume"] = volmap[vkey]
     return jsonify(result)
 
 
