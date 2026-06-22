@@ -42,6 +42,14 @@ button:disabled{opacity:.45;cursor:default}
 .more{border-top:1px solid var(--line);margin-top:12px;padding-top:11px}
 .ex{font-size:13px;color:var(--muted);margin:5px 0}
 .exl{color:var(--text);font-weight:500}
+#hist{margin:8px 0 0}
+.hist-h{display:flex;justify-content:space-between;align-items:center;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:18px 2px 9px}
+.hrow{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 13px;margin-bottom:6px;cursor:pointer;transition:border-color .2s}
+.hrow:hover{border-color:var(--accent-soft)}
+.hrow .hc{font-size:14px;color:var(--text)}
+.hrow .hm{font-size:12px;color:var(--muted);margin-top:2px}
+.hdel{color:var(--muted);font-size:18px;line-height:1;background:none;border:none;cursor:pointer;padding:2px 7px;border-radius:6px}
+.hdel:hover{color:#d98a8a}
 #refine{display:none;gap:10px;margin-top:8px}#refine input{flex:1}
 </style>
 </head>
@@ -56,6 +64,7 @@ button:disabled{opacity:.45;cursor:default}
     <button id="go">Analyser</button>
   </div>
   <div id="status"></div>
+  <div id="hist"></div>
   <div id="results"></div>
   <div id="refine">
     <input id="instr" placeholder="Ajuster : « ajoute des intentions transactionnelles », « focus Rive-Sud »…">
@@ -127,16 +136,40 @@ async function call(url,body,msg){
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
     if(d.error){$('#status').textContent='⚠️ '+(d.detail||d.error)}
-    else{$('#status').textContent=`${(d.clusters||[]).length} clusters · ${esc(d.client||'')}`;render(d)}
+    else{$('#status').textContent=`${(d.clusters||[]).length} clusters · ${esc(d.client||'')}`;render(d);loadHistory()}
   }catch(e){$('#status').textContent='⚠️ '+e.message}
   $('#go').disabled=false;$('#rgo').disabled=false;
 }
 $('#go').onclick=()=>{const seed=$('#seed').value.trim();if(!seed)return;
   call('/analyze',{seed,region:$('#region').value.trim()||'Québec'},'Analyse en cours… (Gemini Pro, ~15-30 s)')};
 $('#rgo').onclick=()=>{const instruction=$('#instr').value.trim();if(!instruction||!current)return;
-  call('/refine',{result:current,instruction,region:$('#region').value.trim()||'Québec'},'Ajustement…');$('#instr').value=''};
+  call('/refine',{result:current,instruction,id:(current&&current._id)||'',region:$('#region').value.trim()||'Québec'},'Ajustement…');$('#instr').value=''};
 $('#seed').addEventListener('keydown',e=>{if(e.key==='Enter')$('#go').click()});
 $('#instr').addEventListener('keydown',e=>{if(e.key==='Enter')$('#rgo').click()});
+function fmtDate(s){if(!s)return '';try{const d=new Date(s);return d.toLocaleDateString('fr-CA')+' '+d.toLocaleTimeString('fr-CA',{hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}
+async function loadHistory(){
+  try{
+    const r=await fetch('/history');const d=await r.json();const items=d.items||[];
+    const who=(d.user&&d.user!=='anonyme')?`<span class="hm">${esc(d.user)}</span>`:'';
+    if(!items.length){$('#hist').innerHTML='';return}
+    $('#hist').innerHTML=`<div class="hist-h"><span>Historique</span>${who}</div>`+
+      items.map(it=>`<div class="hrow" data-id="${esc(it.id)}"><div><div class="hc">${esc(it.client||it.seed)}</div><div class="hm">${esc(it.region||'')} · ${it.nb_clusters} clusters · ${fmtDate(it.ts)}</div></div><button class="hdel" data-del="${esc(it.id)}" title="Supprimer">×</button></div>`).join('');
+  }catch(e){}
+}
+async function openHist(id){
+  $('#go').disabled=true;$('#status').textContent='Chargement de l\'historique…';
+  try{const r=await fetch('/history/'+encodeURIComponent(id));const d=await r.json();
+    if(d.error){$('#status').textContent='⚠️ '+d.error}
+    else{$('#status').textContent=`${(d.clusters||[]).length} clusters · ${esc(d.client||'')}`;render(d)}
+  }catch(e){$('#status').textContent='⚠️ '+e.message}
+  $('#go').disabled=false;
+}
+async function delHist(id){try{await fetch('/history/'+encodeURIComponent(id),{method:'DELETE'});loadHistory()}catch(e){}}
+$('#hist').addEventListener('click',e=>{
+  const del=e.target.closest('[data-del]');if(del){e.stopPropagation();delHist(del.getAttribute('data-del'));return}
+  const row=e.target.closest('[data-id]');if(row){openHist(row.getAttribute('data-id'))}
+});
+document.addEventListener('DOMContentLoaded',loadHistory);
 </script>
 </body>
 </html>

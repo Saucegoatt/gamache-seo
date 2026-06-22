@@ -42,8 +42,18 @@ ADS_CID = os.environ.get("ADS_CUSTOMER_ID", "5802443211")
 ADS_VERSION = os.environ.get("ADS_API_VERSION", "v21")
 ADS_GEO = os.environ.get("ADS_GEO", "2124")
 ADS_LANG = os.environ.get("ADS_LANG", "1002")
+HIST_COL = os.environ.get("HISTORY_COLLECTION", "seo_history")
 
 _creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+
+try:
+    from google.cloud import firestore
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    _db = firestore.Client()
+except Exception as _fe:
+    _db = None
+    FieldFilter = None
+    print("firestore init:", str(_fe)[:200])
 
 
 def _bearer():
@@ -324,6 +334,45 @@ def difficulty(items):
     return out
 
 
+def _user():
+    h = request.headers.get("X-Goog-Authenticated-User-Email", "")
+    if h:
+        return h.rsplit(":", 1)[-1].strip().lower()
+    return (request.headers.get("X-Forwarded-Email")
+            or os.environ.get("DEV_USER", "anonyme")).strip().lower()
+
+
+def save_conv(user, seed, region, client, result):
+    if _db is None:
+        return None
+    try:
+        doc = _db.collection(HIST_COL).document()
+        doc.set({"user": user, "seed": seed, "region": region, "client": client,
+                 "nb_clusters": len(result.get("clusters") or []), "result": result,
+                 "turns": [{"type": "analyze", "label": seed}],
+                 "created_at": firestore.SERVER_TIMESTAMP,
+                 "updated_at": firestore.SERVER_TIMESTAMP})
+        return doc.id
+    except Exception as exc:
+        print("save_conv:", str(exc)[:200])
+        return None
+
+
+def update_conv(doc_id, user, instruction, result):
+    if _db is None or not doc_id:
+        return
+    try:
+        ref = _db.collection(HIST_COL).document(doc_id)
+        snap = ref.get()
+        if not snap.exists or (snap.to_dict() or {}).get("user") != user:
+            return
+        ref.update({"result": result, "nb_clusters": len(result.get("clusters") or []),
+                    "turns": firestore.ArrayUnion([{"type": "refine", "label": instruction}]),
+                    "updated_at": firestore.SERVER_TIMESTAMP})
+    except Exception as exc:
+        print("update_conv:", str(exc)[:200])
+
+
 @app.get("/")
 def index():
     return send_from_directory(HERE, "index.html")
@@ -389,6 +438,9 @@ def analyze():
             clusters[i]["intention_achat"] = diff[k]["intention"]
     if terms:
         result["rising"] = rising_queries(terms[0])
+    cid = save_conv(_user(), seed, region, result.get("client", client), result)
+    if cid:
+        result["_id"] = cid
     return jsonify(result)
 
 
@@ -406,7 +458,71 @@ def refine():
         detail = e.response.text if e.response is not None else str(e)
         return jsonify({"error": "gemini", "detail": detail[:400]}), 502
     updated.setdefault("recherches_google", prev.get("recherches_google", []))
+    cid = (d.get("id") or prev.get("_id") or "").strip()
+    if cid:
+        update_conv(cid, _user(), instruction, updated)
+        updated["_id"] = cid
     return jsonify(updated)
+
+
+@app.get("/whoami")
+def whoami():
+    return jsonify({"user": _user()})
+
+
+@app.get("/history")
+def history():
+    user = _user()
+    if _db is None:
+        return jsonify({"user": user, "items": [], "disabled": True})
+    try:
+        q = _db.collection(HIST_COL)
+        q = q.where(filter=FieldFilter("user", "==", user)) if FieldFilter else q.where("user", "==", user)
+        items = []
+        for d in q.limit(200).stream():
+            o = d.to_dict() or {}
+            ts = o.get("updated_at") or o.get("created_at")
+            items.append({"id": d.id, "seed": o.get("seed", ""), "client": o.get("client", ""),
+                          "region": o.get("region", ""), "nb_clusters": o.get("nb_clusters", 0),
+                          "ts": ts.isoformat() if ts else ""})
+        items.sort(key=lambda x: x["ts"], reverse=True)
+        return jsonify({"user": user, "items": items[:50]})
+    except Exception as exc:
+        print("history:", str(exc)[:200])
+        return jsonify({"user": user, "items": [], "error": str(exc)[:200]})
+
+
+@app.get("/history/<doc_id>")
+def history_one(doc_id):
+    user = _user()
+    if _db is None:
+        return jsonify({"error": "history desactive"}), 404
+    try:
+        snap = _db.collection(HIST_COL).document(doc_id).get()
+        o = snap.to_dict() if snap.exists else None
+        if not o or o.get("user") != user:
+            return jsonify({"error": "introuvable"}), 404
+        res = o.get("result") or {}
+        res["_id"] = doc_id
+        return jsonify(res)
+    except Exception as exc:
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.delete("/history/<doc_id>")
+def history_del(doc_id):
+    user = _user()
+    if _db is None:
+        return jsonify({"ok": False}), 404
+    try:
+        ref = _db.collection(HIST_COL).document(doc_id)
+        snap = ref.get()
+        if snap.exists and (snap.to_dict() or {}).get("user") == user:
+            ref.delete()
+            return jsonify({"ok": True})
+        return jsonify({"ok": False}), 404
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
 
 
 if __name__ == "__main__":
