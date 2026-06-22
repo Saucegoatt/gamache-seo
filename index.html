@@ -82,10 +82,14 @@ body{display:flex;background:var(--bg);color:var(--text);font-family:var(--f-bod
 
 /* ---------- Composer ---------- */
 #composer{border-top:1px solid var(--line);padding:14px 22px 18px;background:var(--bg)}
-.cinner{max-width:860px;margin:0 auto;display:flex;gap:10px;align-items:flex-end;
-  background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px 8px 8px 14px;box-shadow:var(--shadow)}
+.cinner{max-width:860px;margin:0 auto;display:flex;gap:9px;align-items:flex-end;
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px;box-shadow:var(--shadow)}
+#region{flex:none;width:152px;align-self:stretch;background:var(--panel2);border:1px solid var(--line);
+  color:var(--text);font-family:var(--f-body);font-size:13.5px;border-radius:10px;padding:9px 12px;outline:none}
+#region:focus{border-color:var(--signal)}
+#region::placeholder{color:var(--muted)}
 #inp{flex:1;background:none;border:none;color:var(--text);font-family:var(--f-body);font-size:15px;resize:none;
-  outline:none;max-height:180px;padding:6px 0;line-height:1.5}
+  outline:none;max-height:180px;padding:8px 0;line-height:1.5}
 #send{background:var(--signal);color:var(--onsignal);border:none;border-radius:10px;padding:10px 18px;
   font-family:var(--f-body);font-size:14px;font-weight:600;cursor:pointer}
 #send:disabled{opacity:.4;cursor:default}
@@ -141,7 +145,8 @@ body{display:flex;background:var(--bg);color:var(--text);font-family:var(--f-bod
   <div id="thread"></div>
   <div id="composer">
     <div class="cinner">
-      <textarea id="inp" rows="1" placeholder="Colle une URL (ex. excavationp2p.ca, Rive-Sud), ou « nom, secteur »… ou pose une question."></textarea>
+      <input id="region" placeholder="Région / ville" autocomplete="off">
+      <textarea id="inp" rows="1" placeholder="URL du site, « nom, secteur », ou une question…"></textarea>
       <button id="send">Envoyer</button>
     </div>
     <div class="chint">L'assistant analyse, ajuste et rédige selon le contexte de cette conversation.</div>
@@ -213,7 +218,7 @@ function renderReport(data){
 function renderThread(){
   const t=$('#thread');
   if(!state.messages.length){
-    t.innerHTML=`<div class="empty"><div class="ebig">Intentions SEO</div><div class="esub">Colle une URL (ex. <b>excavationp2p.ca</b>) ou « nom, secteur » + une région pour lancer une analyse — puis discute, ajuste les clusters, fais rédiger des titres, des FAQ, un plan d'article.</div></div>`;
+    t.innerHTML=`<div class="empty"><div class="ebig">Intentions SEO</div><div class="esub">Mets l'URL (ex. <b>excavationp2p.ca</b>) ou « nom, secteur » dans la barre, la <b>région</b> dans son champ, et envoie — puis discute, ajuste les clusters, fais rédiger des titres, des FAQ, un plan d'article.</div></div>`;
     return;
   }
   let lastRep=-1;
@@ -252,6 +257,7 @@ async function newConv(silent){
     if(d.id){
       state.conversations.unshift({id:d.id,title:'Nouvelle conversation',ts:''});
       state.convId=d.id;state.messages=[];state.result=null;state.title='';
+      $('#region').value='';
       renderSidebar();if(!silent){renderThread();$('#inp').focus()}
     }
   }catch(e){}
@@ -261,6 +267,7 @@ async function openConv(id){
   try{
     const r=await fetch('/conversations/'+id);const d=await r.json();
     state.messages=d.messages||[];state.result=d.result||null;state.title=d.title||'';
+    $('#region').value=d.region||'';
   }catch(e){state.messages=[];state.result=null}
   closeSide();renderThread();
 }
@@ -272,6 +279,7 @@ async function delConv(id){
 }
 async function send(){
   const text=$('#inp').value.trim();if(!text||state.busy)return;
+  const region=$('#region').value.trim();
   $('#inp').value='';autoGrow();
   if(!state.convId)await newConv(true);
   if(!state.convId)return;
@@ -280,11 +288,12 @@ async function send(){
   state.busy=true;$('#send').disabled=true;renderThread();
   try{
     const r=await fetch('/conversations/'+state.convId+'/message',
-      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,region})});
     const d=await r.json();
     state.messages.pop();
     state.messages.push({role:'assistant',text:d.reply||'(réponse vide)',report:!!d.report});
     if(d.report&&d.result)state.result=d.result;
+    if(d.region)$('#region').value=d.region;
     if(d.title){state.title=d.title;const c=state.conversations.find(x=>x.id===state.convId);if(c){c.title=d.title}}
     const cur=state.conversations.find(c=>c.id===state.convId);
     if(cur)state.conversations=[cur,...state.conversations.filter(c=>c.id!==state.convId)];

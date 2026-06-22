@@ -559,9 +559,10 @@ def conv_message(cid):
     conv = snap.to_dict() if snap.exists else None
     if not conv or conv.get("user") != user:
         return jsonify({"error": "introuvable"}), 404
+    reg_in = (d.get("region") or "").strip()
     messages = conv.get("messages") or []
     result = conv.get("result")
-    region = conv.get("region") or ""
+    region = (reg_in or conv.get("region") or "").strip()
     report_changed = False
     try:
         um = re.search(r"(https?://\S+|www\.\S+)", msg)
@@ -574,7 +575,7 @@ def conv_message(cid):
         intent = (r.get("intent") or "chat").lower()
         if intent == "analyze" or (not result and intent != "chat"):
             seed = (r.get("seed") or msg).strip()
-            reg = (r.get("region") or region or "Quebec").strip()
+            reg = (region or r.get("region") or "Quebec").strip()
             result = run_analysis(seed, reg)
             region = result.get("region", reg)
             report_changed = True
@@ -603,7 +604,7 @@ def conv_message(cid):
     except Exception as exc:
         print("conv_message update:", str(exc)[:200])
     return jsonify({"reply": reply, "result": result if report_changed else None,
-                    "report": report_changed, "title": title})
+                    "report": report_changed, "title": title, "region": region})
 
 
 if __name__ == "__main__":
