@@ -42,7 +42,7 @@ ADS_CID = os.environ.get("ADS_CUSTOMER_ID", "5802443211")
 ADS_VERSION = os.environ.get("ADS_API_VERSION", "v21")
 ADS_GEO = os.environ.get("ADS_GEO", "2124")
 ADS_LANG = os.environ.get("ADS_LANG", "1002")
-HIST_COL = os.environ.get("HISTORY_COLLECTION", "seo_history")
+CONV_COL = os.environ.get("CONVERSATIONS_COLLECTION", "conversations")
 
 _creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
 
@@ -355,68 +355,25 @@ def _user():
             or os.environ.get("DEV_USER", "anonyme")).strip().lower()
 
 
-def save_conv(user, seed, region, client, result):
-    if _db is None:
-        return None
-    try:
-        doc = _db.collection(HIST_COL).document()
-        doc.set({"user": user, "seed": seed, "region": region, "client": client,
-                 "nb_clusters": len(result.get("clusters") or []), "result": result,
-                 "turns": [{"type": "analyze", "label": seed}],
-                 "created_at": firestore.SERVER_TIMESTAMP,
-                 "updated_at": firestore.SERVER_TIMESTAMP})
-        return doc.id
-    except Exception as exc:
-        print("save_conv:", str(exc)[:200])
-        return None
+def _hist_text(messages, n=10):
+    rows = []
+    for m in messages[-n:]:
+        who = "Utilisateur" if m.get("role") == "user" else "Assistant"
+        rows.append("%s: %s" % (who, (m.get("text", "") or "")[:500]))
+    return "\n".join(rows)
 
 
-def update_conv(doc_id, user, instruction, result):
-    if _db is None or not doc_id:
-        return
-    try:
-        ref = _db.collection(HIST_COL).document(doc_id)
-        snap = ref.get()
-        if not snap.exists or (snap.to_dict() or {}).get("user") != user:
-            return
-        ref.update({"result": result, "nb_clusters": len(result.get("clusters") or []),
-                    "turns": firestore.ArrayUnion([{"type": "refine", "label": instruction}]),
-                    "updated_at": firestore.SERVER_TIMESTAMP})
-    except Exception as exc:
-        print("update_conv:", str(exc)[:200])
-
-
-@app.get("/")
-def index():
-    return send_from_directory(HERE, "index.html")
-
-
-@app.get("/health")
-def health():
-    return jsonify({"ok": True, "service": "gamache-seo", "model": MODEL})
-
-
-@app.post("/analyze")
-def analyze():
-    d = request.get_json(silent=True) or {}
-    seed = (d.get("seed") or "").strip()
-    region = (d.get("region") or "").strip() or "Quebec"
-    if not seed:
-        return jsonify({"error": "seed manquant"}), 400
+def run_analysis(seed, region):
+    seed = (seed or "").strip()
+    region = (region or "").strip() or "Quebec"
     if seed.startswith("http"):
         ctx, client = fetch_site(seed)
         ctx = ctx or seed
     else:
         ctx, client = seed, seed.split(",")[0].strip()
-    try:
-        services = extract_seeds(ctx, client)
-        raw, searches = ground(client, region, ctx, services)
-        result = structure(client, region, raw, services)
-    except requests.HTTPError as e:
-        detail = e.response.text if e.response is not None else str(e)
-        return jsonify({"error": "gemini", "detail": detail[:400]}), 502
-    except Exception as e:
-        return jsonify({"error": "analyse", "detail": str(e)[:300]}), 502
+    services = extract_seeds(ctx, client)
+    raw, searches = ground(client, region, ctx, services)
+    result = structure(client, region, raw, services)
     result.setdefault("client", client)
     result.setdefault("region", region)
     result["recherches_google"] = searches[:18]
@@ -428,14 +385,14 @@ def analyze():
     for i in range(0, min(len(terms), 10), 5):
         tr.update(trends(terms[i:i + 5]))
     for c in clusters:
-        key = (c.get("terme_trend") or c.get("nom") or "").strip()
-        if key in tr:
-            c["tendance"] = tr[key]
+        k = (c.get("terme_trend") or c.get("nom") or "").strip()
+        if k in tr:
+            c["tendance"] = tr[k]
     volmap = keyword_volumes(terms)
     for c in clusters:
-        vkey = (c.get("terme_trend") or c.get("nom") or "").strip().lower()
-        if vkey in volmap:
-            c["volume"] = volmap[vkey]
+        vk = (c.get("terme_trend") or c.get("nom") or "").strip().lower()
+        if vk in volmap:
+            c["volume"] = volmap[vk]
     order = sorted(range(len(clusters)),
                    key=lambda i: {"haute": 0, "moyenne": 1, "basse": 2}.get(clusters[i].get("priorite"), 3))
     top = order[:SERP_TOP]
@@ -453,33 +410,75 @@ def analyze():
             clusters[i]["intention_achat"] = diff[k]["intention"]
     if terms:
         result["rising"] = rising_queries(terms[0])
-    cid = save_conv(_user(), seed, region, result.get("client", client), result)
-    if cid:
-        result["_id"] = cid
-    return jsonify(result)
+    return result
 
 
-@app.post("/refine")
-def refine():
-    d = request.get_json(silent=True) or {}
-    instruction = (d.get("instruction") or "").strip()
-    if not instruction:
-        return jsonify({"error": "instruction manquante"}), 400
-    prev = d.get("result") or {}
-    region = (d.get("region") or prev.get("region") or "Quebec").strip()
+def route_turn(messages, result, user_msg):
+    if result:
+        names = ", ".join(c.get("nom", "") for c in (result.get("clusters") or []))
+        rsum = "OUI (client: %s, region: %s, clusters: %s)" % (
+            result.get("client", ""), result.get("region", ""), names)
+    else:
+        rsum = "NON (aucune analyse pour l'instant)"
+    prompt = (
+        "Tu es l'aiguilleur d'un assistant SEO conversationnel (francais du Quebec). "
+        "Determine l'intention du DERNIER message.\n\n"
+        "Rapport existant : " + rsum + "\n\n"
+        "Historique :\n" + _hist_text(messages) + "\n\n"
+        "Dernier message : " + user_msg + "\n\n"
+        "Intentions :\n"
+        "- analyze : l'utilisateur fournit un site (URL) ou « nom, secteur » a analyser, ou "
+        "demande explicitement une nouvelle analyse. Remplis seed (URL ou « nom, secteur ») et "
+        "region (si mentionnee, sinon \"\").\n"
+        "- refine : l'utilisateur veut MODIFIER le rapport existant (ajouter/retirer/recentrer des "
+        "clusters, changer la region). Remplis instruction.\n"
+        "- chat : question, explication ou redaction (titres, meta, FAQ, conseils) basee sur le contexte.\n"
+        "Si aucun rapport n'existe et que le message n'est ni un site ni « nom, secteur », intent=chat.\n"
+        "Reponds UNIQUEMENT en JSON : "
+        "{\"intent\":\"analyze|refine|chat\",\"seed\":\"\",\"region\":\"\",\"instruction\":\"\"}")
     try:
-        updated = refine_result(prev, instruction, region)
+        return _gen_json(prompt, temperature=0.1, max_tokens=512, tries=2)
+    except Exception:
+        return {"intent": "chat"}
+
+
+def chat_reply(messages, result, user_msg):
+    ctx = ""
+    if result:
+        ctx = "\n\nRapport SEO actuel (JSON) :\n" + json.dumps(result, ensure_ascii=False)[:6000]
+    prompt = (
+        "Tu es un strategiste SEO senior au Quebec, en conversation avec un collegue de l'agence. "
+        "Reponds de facon claire, concrete et actionnable (francais du Quebec). Si on te demande de "
+        "rediger (titres H1, meta-descriptions, plan d'article, FAQ), fais-le directement. Appuie-toi "
+        "sur le rapport ci-dessous s'il existe ; n'invente aucun service non liste." + ctx +
+        "\n\nHistorique :\n" + _hist_text(messages) + "\n\nMessage : " + user_msg + "\n\nReponse :")
+    return _text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 2048}}))
+
+
+@app.get("/")
+def index():
+    return send_from_directory(HERE, "index.html")
+
+
+@app.get("/health")
+def health():
+    return jsonify({"ok": True, "service": "gamache-seo", "model": MODEL})
+
+
+@app.post("/analyze")
+def analyze():
+    d = request.get_json(silent=True) or {}
+    seed = (d.get("seed") or "").strip()
+    if not seed:
+        return jsonify({"error": "seed manquant"}), 400
+    try:
+        return jsonify(run_analysis(seed, d.get("region") or ""))
     except requests.HTTPError as e:
         detail = e.response.text if e.response is not None else str(e)
         return jsonify({"error": "gemini", "detail": detail[:400]}), 502
     except Exception as e:
-        return jsonify({"error": "raffinement", "detail": str(e)[:300]}), 502
-    updated.setdefault("recherches_google", prev.get("recherches_google", []))
-    cid = (d.get("id") or prev.get("_id") or "").strip()
-    if cid:
-        update_conv(cid, _user(), instruction, updated)
-        updated["_id"] = cid
-    return jsonify(updated)
+        return jsonify({"error": "analyse", "detail": str(e)[:300]}), 502
 
 
 @app.get("/whoami")
@@ -487,59 +486,124 @@ def whoami():
     return jsonify({"user": _user()})
 
 
-@app.get("/history")
-def history():
+@app.get("/conversations")
+def conv_list():
     user = _user()
     if _db is None:
-        return jsonify({"user": user, "items": [], "disabled": True})
+        return jsonify({"user": user, "items": []})
     try:
-        q = _db.collection(HIST_COL)
+        q = _db.collection(CONV_COL)
         q = q.where(filter=FieldFilter("user", "==", user)) if FieldFilter else q.where("user", "==", user)
         items = []
         for d in q.limit(200).stream():
             o = d.to_dict() or {}
             ts = o.get("updated_at") or o.get("created_at")
-            items.append({"id": d.id, "seed": o.get("seed", ""), "client": o.get("client", ""),
-                          "region": o.get("region", ""), "nb_clusters": o.get("nb_clusters", 0),
+            items.append({"id": d.id, "title": o.get("title") or "Nouvelle conversation",
                           "ts": ts.isoformat() if ts else ""})
         items.sort(key=lambda x: x["ts"], reverse=True)
-        return jsonify({"user": user, "items": items[:50]})
+        return jsonify({"user": user, "items": items})
     except Exception as exc:
-        print("history:", str(exc)[:200])
+        print("conv_list:", str(exc)[:200])
         return jsonify({"user": user, "items": [], "error": str(exc)[:200]})
 
 
-@app.get("/history/<doc_id>")
-def history_one(doc_id):
+@app.post("/conversations")
+def conv_create():
     user = _user()
     if _db is None:
-        return jsonify({"error": "history desactive"}), 404
-    try:
-        snap = _db.collection(HIST_COL).document(doc_id).get()
-        o = snap.to_dict() if snap.exists else None
-        if not o or o.get("user") != user:
-            return jsonify({"error": "introuvable"}), 404
-        res = o.get("result") or {}
-        res["_id"] = doc_id
-        return jsonify(res)
-    except Exception as exc:
-        return jsonify({"error": str(exc)[:200]}), 500
+        return jsonify({"error": "stockage indisponible"}), 503
+    doc = _db.collection(CONV_COL).document()
+    doc.set({"user": user, "title": "", "client": "", "region": "", "messages": [],
+             "result": None, "created_at": firestore.SERVER_TIMESTAMP,
+             "updated_at": firestore.SERVER_TIMESTAMP})
+    return jsonify({"id": doc.id})
 
 
-@app.delete("/history/<doc_id>")
-def history_del(doc_id):
+@app.get("/conversations/<cid>")
+def conv_get(cid):
     user = _user()
     if _db is None:
-        return jsonify({"ok": False}), 404
+        return jsonify({"error": "indisponible"}), 503
+    snap = _db.collection(CONV_COL).document(cid).get()
+    o = snap.to_dict() if snap.exists else None
+    if not o or o.get("user") != user:
+        return jsonify({"error": "introuvable"}), 404
+    return jsonify({"id": cid, "title": o.get("title", ""), "messages": o.get("messages") or [],
+                    "result": o.get("result"), "region": o.get("region", "")})
+
+
+@app.delete("/conversations/<cid>")
+def conv_del(cid):
+    user = _user()
+    if _db is None:
+        return jsonify({"ok": False}), 503
+    ref = _db.collection(CONV_COL).document(cid)
+    snap = ref.get()
+    if snap.exists and (snap.to_dict() or {}).get("user") == user:
+        ref.delete()
+        return jsonify({"ok": True})
+    return jsonify({"ok": False}), 404
+
+
+@app.post("/conversations/<cid>/message")
+def conv_message(cid):
+    user = _user()
+    d = request.get_json(silent=True) or {}
+    msg = (d.get("message") or "").strip()
+    if not msg:
+        return jsonify({"error": "message vide"}), 400
+    if _db is None:
+        return jsonify({"error": "stockage indisponible"}), 503
+    ref = _db.collection(CONV_COL).document(cid)
+    snap = ref.get()
+    conv = snap.to_dict() if snap.exists else None
+    if not conv or conv.get("user") != user:
+        return jsonify({"error": "introuvable"}), 404
+    messages = conv.get("messages") or []
+    result = conv.get("result")
+    region = conv.get("region") or ""
+    report_changed = False
     try:
-        ref = _db.collection(HIST_COL).document(doc_id)
-        snap = ref.get()
-        if snap.exists and (snap.to_dict() or {}).get("user") == user:
-            ref.delete()
-            return jsonify({"ok": True})
-        return jsonify({"ok": False}), 404
+        um = re.search(r"(https?://\S+|www\.\S+)", msg)
+        if not result and um:
+            rest = (msg[:um.start()] + " " + msg[um.end():]).strip(" ,.-—")
+            r = {"intent": "analyze", "seed": um.group(1),
+                 "region": rest if 0 < len(rest) <= 40 else ""}
+        else:
+            r = route_turn(messages, result, msg)
+        intent = (r.get("intent") or "chat").lower()
+        if intent == "analyze" or (not result and intent != "chat"):
+            seed = (r.get("seed") or msg).strip()
+            reg = (r.get("region") or region or "Quebec").strip()
+            result = run_analysis(seed, reg)
+            region = result.get("region", reg)
+            report_changed = True
+            reply = ("Voici l'analyse SEO de %s (%s) — %d clusters. "
+                     "Pose-moi tes questions, ou demande un ajustement.") % (
+                result.get("client", seed), region, len(result.get("clusters") or []))
+        elif intent == "refine" and result:
+            result = refine_result(result, r.get("instruction") or msg, region)
+            report_changed = True
+            reply = "C'est ajuste. " + (r.get("instruction") or "").strip()
+        else:
+            reply = chat_reply(messages, result, msg) or "Peux-tu reformuler ta demande ?"
+    except requests.HTTPError as e:
+        reply = "⚠️ Erreur Gemini : " + (e.response.text if e.response is not None else str(e))[:200]
+    except Exception as e:
+        reply = "⚠️ " + str(e)[:200]
+    messages = (messages + [{"role": "user", "text": msg},
+                            {"role": "assistant", "text": reply, "report": report_changed}])[-60:]
+    title = conv.get("title") or ""
+    if not title:
+        title = ((result or {}).get("client") if report_changed else msg[:48]) or "Nouvelle conversation"
+    try:
+        ref.update({"messages": messages, "result": result, "region": region, "title": title,
+                    "client": (result or {}).get("client", conv.get("client", "")),
+                    "updated_at": firestore.SERVER_TIMESTAMP})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+        print("conv_message update:", str(exc)[:200])
+    return jsonify({"reply": reply, "result": result if report_changed else None,
+                    "report": report_changed, "title": title})
 
 
 if __name__ == "__main__":
