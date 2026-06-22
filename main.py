@@ -38,7 +38,7 @@ IMPERSONATE = os.environ.get("IMPERSONATE_SUBJECT", "yannis@gamachemedia.com")
 ADS_DEV_TOKEN = os.environ.get("ADS_DEV_TOKEN", "")
 ADS_LOGIN_CID = os.environ.get("ADS_LOGIN_CUSTOMER_ID", "7802443211")
 ADS_CID = os.environ.get("ADS_CUSTOMER_ID", "7802443211")
-ADS_VERSION = os.environ.get("ADS_API_VERSION", "v20")
+ADS_VERSION = os.environ.get("ADS_API_VERSION", "v21")
 ADS_GEO = os.environ.get("ADS_GEO", "2124")
 ADS_LANG = os.environ.get("ADS_LANG", "1002")
 
