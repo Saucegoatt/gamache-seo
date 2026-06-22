@@ -76,14 +76,35 @@ def _text(data):
         return ""
 
 
+def _repair(s):
+    s = s.replace("\r", " ")
+    s = re.sub(r",\s*([}\]])", r"\1", s)  # virgules trainantes
+    return s
+
+
 def _parse(txt):
     txt = re.sub(r"^```(json)?\s*", "", (txt or "").strip())
     txt = re.sub(r"\s*```$", "", txt).strip()
+    m = re.search(r"\{.*\}", txt, re.S)
+    cand = m.group(0) if m else txt
     try:
-        return json.loads(txt)
-    except Exception:
-        m = re.search(r"\{.*\}", txt, re.S)
-        return json.loads(m.group(0)) if m else {}
+        return json.loads(cand)
+    except ValueError:
+        return json.loads(_repair(cand))  # leve ValueError si toujours invalide
+
+
+def _gen_json(prompt, temperature=0.3, max_tokens=8192, tries=3):
+    """Genere du JSON via Gemini avec retries (sortie stochastique parfois invalide)."""
+    err = None
+    for _ in range(tries):
+        try:
+            return _parse(_text(_post({
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens,
+                                     "responseMimeType": "application/json"}})))
+        except ValueError as e:
+            err = e
+    raise ValueError("Gemini JSON invalide apres %d essais: %s" % (tries, str(err)[:150]))
 
 
 def fetch_site(url):
@@ -109,9 +130,7 @@ def extract_seeds(context, client):
         f"Client : {client}\nContenu : {context}\n"
         "Reponds UNIQUEMENT en JSON : {\"seeds\":[\"...\"]}"
     )
-    j = _parse(_text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024,
-                                                 "responseMimeType": "application/json"}})))
+    j = _gen_json(prompt, temperature=0.2, max_tokens=1024)
     s = [x.strip() for x in (j.get("seeds") or []) if isinstance(x, str) and x.strip()]
     return s[:8] or [client]
 
@@ -159,9 +178,7 @@ def structure(client, region, raw, services):
         "a Google Trends (ex. 'mini excavation', 'pave uni'). "
         "Donne 6 a 9 clusters. Reponds UNIQUEMENT en JSON : " + SCHEMA
     )
-    return _parse(_text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                               "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192,
-                                                    "responseMimeType": "application/json"}})))
+    return _gen_json(prompt, temperature=0.3, max_tokens=8192)
 
 
 def refine_result(prev, instruction, region):
@@ -173,9 +190,7 @@ def refine_result(prev, instruction, region):
         f"JSON actuel :\n{json.dumps(prev, ensure_ascii=False)[:7000]}\n\n"
         "Reponds UNIQUEMENT le JSON complet mis a jour : " + SCHEMA
     )
-    return _parse(_text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                               "generationConfig": {"temperature": 0.4, "maxOutputTokens": 8192,
-                                                    "responseMimeType": "application/json"}})))
+    return _gen_json(prompt, temperature=0.4, max_tokens=8192)
 
 
 def trends(terms):
@@ -322,9 +337,7 @@ def difficulty(items):
         "presence de pubs. Reponds UNIQUEMENT en JSON : "
         "{\"d\":[{\"i\":0,\"difficulte\":\"...\",\"intention\":\"...\"}]}\n\n" + "\n".join(rows))
     try:
-        j = _parse(_text(_post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048,
-                                                     "responseMimeType": "application/json"}})))
+        j = _gen_json(prompt, temperature=0.2, max_tokens=2048, tries=2)
     except Exception:
         return {}
     out = {}
@@ -402,6 +415,8 @@ def analyze():
     except requests.HTTPError as e:
         detail = e.response.text if e.response is not None else str(e)
         return jsonify({"error": "gemini", "detail": detail[:400]}), 502
+    except Exception as e:
+        return jsonify({"error": "analyse", "detail": str(e)[:300]}), 502
     result.setdefault("client", client)
     result.setdefault("region", region)
     result["recherches_google"] = searches[:18]
@@ -457,6 +472,8 @@ def refine():
     except requests.HTTPError as e:
         detail = e.response.text if e.response is not None else str(e)
         return jsonify({"error": "gemini", "detail": detail[:400]}), 502
+    except Exception as e:
+        return jsonify({"error": "raffinement", "detail": str(e)[:300]}), 502
     updated.setdefault("recherches_google", prev.get("recherches_google", []))
     cid = (d.get("id") or prev.get("_id") or "").strip()
     if cid:
