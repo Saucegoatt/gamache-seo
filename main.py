@@ -94,16 +94,22 @@ def _parse(txt):
 
 
 def _gen_json(prompt, temperature=0.3, max_tokens=8192, tries=3):
-    """Genere du JSON via Gemini avec retries (sortie stochastique parfois invalide)."""
+    """Genere du JSON via Gemini avec retries + budget de reflexion BORNE (a 1/4 du total),
+    sinon le 'thinking' de 2.5 Pro mange le budget de sortie et tronque le JSON."""
     err = None
+    tb = max(1024, max_tokens // 4)
     for _ in range(tries):
+        data = _post({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                      "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens,
+                                           "responseMimeType": "application/json",
+                                           "thinkingConfig": {"thinkingBudget": tb}}})
+        txt = _text(data)
         try:
-            return _parse(_text(_post({
-                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens,
-                                     "responseMimeType": "application/json"}})))
+            return _parse(txt)
         except ValueError as e:
             err = e
+            fr = (data.get("candidates") or [{}])[0].get("finishReason")
+            print("gen_json retry: finishReason=%s out_len=%d" % (fr, len(txt)))
     raise ValueError("Gemini JSON invalide apres %d essais: %s" % (tries, str(err)[:150]))
 
 
