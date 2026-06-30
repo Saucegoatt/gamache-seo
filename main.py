@@ -182,9 +182,8 @@ def structure(client, region, raw, services):
         "s'appuie sur le site + de vraies recherches Google (ancrage), sans Search Console ni "
         "Analytics. Pour chaque cluster, terme_trend = un terme COURT (1-3 mots, SANS ville) propice "
         "a Google Trends (ex. 'mini excavation', 'pave uni'). "
-        "Donne de 6 a 10 clusters selon l'etendue REELLE des services du client : ne "
-        "force pas le nombre, n'invente aucun cluster mince ou redondant. Reponds "
-        "UNIQUEMENT en JSON : " + SCHEMA
+        "Donne 6 clusters (les plus pertinents selon les services reels du client, "
+        "sans inventer de cluster mince ou redondant). Reponds UNIQUEMENT en JSON : " + SCHEMA
     )
     return _gen_json(prompt, temperature=0.3, max_tokens=32768)
 
@@ -192,7 +191,7 @@ def structure(client, region, raw, services):
 def refine_result(prev, instruction, region):
     prompt = (
         "Voici une analyse SEO en JSON. Applique la demande et renvoie le MEME format JSON "
-        "complet (garde 6 a 10 clusters, conserve note_donnees et sources_recommandees). "
+        "complet (garde 6 clusters, conserve note_donnees et sources_recommandees). "
         "N'invente pas de faux services.\n\n"
         f"Region : {region}\nDemande : {instruction}\n\n"
         f"JSON actuel :\n{json.dumps(prev, ensure_ascii=False)[:7000]}\n\n"
